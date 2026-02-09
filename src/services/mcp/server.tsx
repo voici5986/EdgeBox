@@ -166,28 +166,25 @@ export function createServer(): FastMCP {
     return server
 }
 
-// Track session to sandbox mapping
-const sessionSandboxMap = new Map<string, string>();
-
 // Export function for manual sandbox cleanup
 export async function cleanupSandbox(sessionId: string): Promise<boolean> {
-    const sandboxId = sessionSandboxMap.get(sessionId);
-    if (sandboxId) {
-        const manager = getSandboxManager();
-        if (manager) {
-            await manager.endSession(sessionId);
-        }
-        sessionSandboxMap.delete(sessionId);
-        return true;
-    }
-    return false;
+    const manager = getSandboxManager();
+    if (!manager) return false;
+
+    const sandboxId = manager.getSessionSandboxId(sessionId);
+    if (!sandboxId) return false;
+
+    await manager.endSession(sessionId);
+    return true;
 }
 
 // Export function to get all active sessions
 export function getActiveSessions(): Array<{ sessionId: string, sandboxId: string }> {
-    return Array.from(sessionSandboxMap.entries()).map(([sessionId, sandboxId]) => ({
-        sessionId,
-        sandboxId
+    const manager = getSandboxManager();
+    if (!manager) return [];
+    return manager.getAllSessions().map(s => ({
+        sessionId: s.sessionId,
+        sandboxId: s.sandboxId,
     }));
 }
 
@@ -204,30 +201,15 @@ async function ensureSandbox(sessionId?: string | unknown) {
         throw new Error('Session ID is required to ensure sandbox');
     }
 
-    // Get or create sandbox for this session
-    let sandboxId = sessionSandboxMap.get(sessionIdStr);
-
-    if (!sandboxId) {
-        // Create new sandbox for this session
-        const manager = getSandboxManager();
-        if (!manager) {
-            throw new Error('Sandbox manager not available');
-        }
-        sandboxId = await manager.createSandboxForSession(sessionIdStr!);
-        sessionSandboxMap.set(sessionIdStr!, sandboxId);
-
-        // Note: Cleanup will be handled by timeout or manual deletion, not session close
-    }
-
-    // Get sandbox instance (with local Docker routing)
     const manager = getSandboxManager();
     if (!manager) {
         throw new Error('Sandbox manager not available');
     }
+
+    // Single source of truth: SandboxManager owns all session-to-sandbox mappings
     const container = await manager.getSandboxForSession(sessionIdStr);
     if (!container) {
-        // throw new Error(`No sandbox available for session ${sessionIdStr}`);
-        await manager.createSandboxForSession(sessionIdStr!);
+        await manager.createSandboxForSession(sessionIdStr);
     }
 
     // Ensure TCP forwarders are running (only start if not already running)
@@ -718,9 +700,207 @@ function addGUITools(server: FastMCP) {
     });
 }
 
+function addContainerLifecycleTools(server: FastMCP) {
+
+    // Helper: resolve session_id parameter, defaulting to current MCP session
+    function resolveSessionId(argSessionId: string | undefined, session: any): string {
+        if (argSessionId) return argSessionId;
+        const id = typeof session?.id === 'string' ? session.id : undefined;
+        if (!id) throw new Error('No session_id provided and current session ID is unavailable');
+        return id;
+    }
+
+    server.addTool({
+        name: "container_list",
+        description: "List all active sessions and their container status",
+        parameters: z.object({}),
+        execute: async () => {
+            const manager = getSandboxManager();
+            if (!manager) {
+                throw new Error('Sandbox manager not available');
+            }
+
+            const sessions = manager.getAllSessions();
+
+            const result = sessions.map(s => {
+                const config = manager.getSandboxConfig(s.sandboxId);
+                const container = manager.getContainerForSession(s.sessionId);
+                return {
+                    session_id: s.sessionId,
+                    status: config?.status || 'unknown',
+                    created_at: s.createdAt,
+                    last_activity: s.lastActivity,
+                    timeout_minutes: config?.timeout,
+                    ports: container?.ports,
+                    domain: container?.domain,
+                };
+            });
+
+            return JSON.stringify(result);
+        },
+    });
+
+    server.addTool({
+        name: "container_create",
+        description: "Create and start a new sandbox container for the current session (or a specified session). If this session already has a running container, returns its info instead of creating a duplicate.",
+        parameters: z.object({
+            session_id: z.string().optional().describe("Target session ID (default: current session)"),
+            timeout: z.number().optional().describe("Timeout in minutes before auto-shutdown (default: 30)"),
+        }),
+        execute: async (args, { session }) => {
+            const manager = getSandboxManager();
+            if (!manager) {
+                throw new Error('Sandbox manager not available');
+            }
+
+            const sessionId = resolveSessionId(args.session_id, session);
+
+            // Check if this session already has a container
+            const existingSandboxId = manager.getSessionSandboxId(sessionId);
+            if (existingSandboxId) {
+                const config = manager.getSandboxConfig(existingSandboxId);
+                if (config && config.status === 'running') {
+                    return JSON.stringify({
+                        success: true,
+                        session_id: sessionId,
+                        status: 'running',
+                        message: `Session '${sessionId}' already has a running container`,
+                    });
+                }
+            }
+
+            const timeout = args.timeout || 30;
+            const sandboxId = await manager.createSandboxForSession(sessionId);
+
+            // Apply custom timeout if specified
+            const config = manager.getSandboxConfig(sandboxId);
+            if (config && timeout !== 30) {
+                config.timeout = timeout;
+            }
+
+            return JSON.stringify({
+                success: true,
+                session_id: sessionId,
+                status: 'running',
+                timeout,
+                message: `Container created and started for session '${sessionId}'`,
+            });
+        },
+    });
+
+    server.addTool({
+        name: "container_stop",
+        description: "Stop the sandbox container for the current session (or a specified session).",
+        parameters: z.object({
+            session_id: z.string().optional().describe("Target session ID (default: current session)"),
+        }),
+        execute: async (args, { session }) => {
+            const manager = getSandboxManager();
+            if (!manager) {
+                throw new Error('Sandbox manager not available');
+            }
+
+            const sessionId = resolveSessionId(args.session_id, session);
+            const sandboxId = manager.getSessionSandboxId(sessionId);
+            if (!sandboxId) {
+                return JSON.stringify({
+                    success: false,
+                    error: `No container found for session '${sessionId}'`,
+                });
+            }
+
+            const config = manager.getSandboxConfig(sandboxId);
+            if (config?.status === 'stopped') {
+                return JSON.stringify({
+                    success: false,
+                    error: `Container for session '${sessionId}' is already stopped`,
+                });
+            }
+
+            await manager.stopSandbox(sandboxId);
+
+            return JSON.stringify({
+                success: true,
+                session_id: sessionId,
+                status: 'stopped',
+                message: `Container for session '${sessionId}' stopped successfully`,
+            });
+        },
+    });
+
+    server.addTool({
+        name: "container_restart",
+        description: "Restart the sandbox container for the current session (or a specified session). Stops the existing container and creates a new one.",
+        parameters: z.object({
+            session_id: z.string().optional().describe("Target session ID (default: current session)"),
+        }),
+        execute: async (args, { session }) => {
+            const manager = getSandboxManager();
+            if (!manager) {
+                throw new Error('Sandbox manager not available');
+            }
+
+            const sessionId = resolveSessionId(args.session_id, session);
+            const sandboxId = manager.getSessionSandboxId(sessionId);
+
+            // Stop existing container if any
+            if (sandboxId) {
+                const config = manager.getSandboxConfig(sandboxId);
+                if (config && (config.status === 'running' || config.status === 'starting')) {
+                    await manager.stopSandbox(sandboxId);
+                }
+            }
+
+            // Create a fresh container for this session
+            await manager.createSandboxForSession(sessionId);
+
+            return JSON.stringify({
+                success: true,
+                session_id: sessionId,
+                status: 'running',
+                message: `Container for session '${sessionId}' restarted successfully`,
+            });
+        },
+    });
+
+    server.addTool({
+        name: "container_delete",
+        description: "Delete the sandbox container for the current session (or a specified session). Stops the container if running and removes all associated data.",
+        parameters: z.object({
+            session_id: z.string().optional().describe("Target session ID (default: current session)"),
+        }),
+        execute: async (args, { session }) => {
+            const manager = getSandboxManager();
+            if (!manager) {
+                throw new Error('Sandbox manager not available');
+            }
+
+            const sessionId = resolveSessionId(args.session_id, session);
+            const sandboxId = manager.getSessionSandboxId(sessionId);
+            if (!sandboxId) {
+                return JSON.stringify({
+                    success: false,
+                    error: `No container found for session '${sessionId}'`,
+                });
+            }
+
+            await manager.deleteSandbox(sandboxId);
+
+            return JSON.stringify({
+                success: true,
+                session_id: sessionId,
+                message: `Container for session '${sessionId}' deleted successfully`,
+            });
+        },
+    });
+}
+
 function addAllTools(serverInstance: FastMCP) {
     // Core tools (always available)
     addCoreTools(serverInstance);
+
+    // Container lifecycle tools (always available)
+    addContainerLifecycleTools(serverInstance);
 
     // GUI tools (conditional)
     if (isGUIToolsEnabled()) {
