@@ -57,6 +57,7 @@
     - [MCP Client Configuration](#mcp-client-configuration)
     - [Instructing Your LLM Agent](#instructing-your-llm-agent)
     - [Multi-Session Concurrent Sandboxes](#multi-session-concurrent-sandboxes)
+    - [Programmatic Access (SDK Examples)](#programmatic-access-sdk-examples)
   - [🔐 Security](#-security)
   - [📄 License](#-license)
   - [🙏 Acknowledgments](#-acknowledgments)
@@ -224,6 +225,469 @@ Easily manage multiple isolated environments by specifying an `x-session-id` in 
     }
   }
 }
+```
+
+### Programmatic Access (SDK Examples)
+
+You can connect to EdgeBox's MCP server programmatically from your own code. Below are quickstart examples for Python and TypeScript.
+
+#### Python Quickstart (FastMCP)
+
+Use the [FastMCP](https://gofastmcp.com/clients/client) client to connect to EdgeBox from Python.
+
+**Install:**
+
+```bash
+pip install fastmcp
+```
+
+**Example:**
+
+```python
+import asyncio
+from fastmcp import Client
+
+EDGEBOX_MCP_URL = "http://localhost:8888/mcp"
+
+async def main():
+    client = Client(EDGEBOX_MCP_URL)
+
+    async with client:
+        # List available tools
+        tools = await client.list_tools()
+        for tool in tools:
+            print(f"  - {tool.name}: {tool.description}")
+
+        # Execute Python code in the sandbox
+        result = await client.call_tool(
+            "execute_python",
+            {"code": "import sys; print(f'Hello from EdgeBox! Python {sys.version}')"},
+        )
+        print(f"Result: {result}")
+
+        # Run a shell command
+        result = await client.call_tool(
+            "shell_run",
+            {"command": "uname -a && whoami"},
+        )
+        print(f"Shell: {result}")
+
+        # File operations
+        await client.call_tool(
+            "fs_write",
+            {"path": "/tmp/hello.txt", "content": "Hello from EdgeBox!"},
+        )
+        result = await client.call_tool("fs_read", {"path": "/tmp/hello.txt"})
+        print(f"File content: {result}")
+
+        # Execute TypeScript code in the sandbox
+        result = await client.call_tool(
+            "execute_typescript",
+            {"code": "console.log(`Node.js ${process.version}`)"},
+        )
+        print(f"TypeScript: {result}")
+
+        # Desktop automation (requires GUI Tools enabled)
+        # result = await client.call_tool("desktop_screenshot", {})
+        # result = await client.call_tool("desktop_keyboard_type", {"text": "hello"})
+
+asyncio.run(main())
+```
+
+#### TypeScript Quickstart (fastmcp)
+
+Use the [MCP SDK](https://github.com/modelcontextprotocol/typescript-sdk) client (as referenced by [fastmcp](https://github.com/punkpeye/fastmcp)) to connect to EdgeBox from TypeScript.
+
+**Install:**
+
+```bash
+npm install @modelcontextprotocol/sdk fastmcp
+```
+
+**Example:**
+
+```typescript
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+
+const EDGEBOX_MCP_URL = "http://localhost:8888/mcp";
+
+async function main() {
+  const client = new Client(
+    { name: "edgebox-quickstart", version: "1.0.0" },
+    { capabilities: {} },
+  );
+
+  const transport = new StreamableHTTPClientTransport(
+    new URL(EDGEBOX_MCP_URL),
+  );
+  await client.connect(transport);
+
+  try {
+    // List available tools
+    const { tools } = await client.listTools();
+    for (const tool of tools) {
+      console.log(`  - ${tool.name}: ${tool.description}`);
+    }
+
+    // Execute Python code in the sandbox
+    const pythonResult = await client.callTool({
+      name: "execute_python",
+      arguments: {
+        code: "import sys; print(f'Hello from EdgeBox! Python {sys.version}')",
+      },
+    });
+    console.log("Result:", pythonResult.content);
+
+    // Run a shell command
+    const shellResult = await client.callTool({
+      name: "shell_run",
+      arguments: { command: "uname -a && whoami" },
+    });
+    console.log("Shell:", shellResult.content);
+
+    // File operations
+    await client.callTool({
+      name: "fs_write",
+      arguments: { path: "/tmp/hello.txt", content: "Hello from EdgeBox!" },
+    });
+    const readResult = await client.callTool({
+      name: "fs_read",
+      arguments: { path: "/tmp/hello.txt" },
+    });
+    console.log("File content:", readResult.content);
+
+    // Execute TypeScript code in the sandbox
+    const tsResult = await client.callTool({
+      name: "execute_typescript",
+      arguments: { code: "console.log(`Node.js ${process.version}`)" },
+    });
+    console.log("TypeScript:", tsResult.content);
+
+    // Desktop automation (requires GUI Tools enabled)
+    // const screenshot = await client.callTool({ name: "desktop_screenshot", arguments: {} });
+    // const typed = await client.callTool({ name: "desktop_keyboard_type", arguments: { text: "hello" } });
+  } finally {
+    await client.close();
+  }
+}
+
+main().catch(console.error);
+```
+
+#### Container Management Examples
+
+EdgeBox provides container lifecycle tools (`container_list`, `container_create`, `container_stop`, `container_restart`, `container_delete`) to manage sandbox containers programmatically.
+`container_stop` ends the session/container mapping, so in typical workflows you should use **either** `container_stop` **or** `container_delete` as the final cleanup step (not both in sequence for the same `session_id`).
+
+**Python:**
+
+```python
+import asyncio
+from fastmcp import Client
+
+async def main():
+    client = Client("http://localhost:8888/mcp")
+
+    async with client:
+        # Create a new container (with 60-minute timeout)
+        result = await client.call_tool(
+            "container_create",
+            {"session_id": "my-session", "timeout": 60},
+        )
+        print(f"Create: {result}")
+
+        # List all active containers
+        result = await client.call_tool("container_list", {})
+        print(f"List: {result}")
+
+        # Restart the container
+        result = await client.call_tool(
+            "container_restart", {"session_id": "my-session"}
+        )
+        print(f"Restart: {result}")
+
+        # Cleanup option A: stop container for this session
+        result = await client.call_tool(
+            "container_stop", {"session_id": "my-session"}
+        )
+        print(f"Stop: {result}")
+
+        # Cleanup option B (alternative): delete directly instead of stop
+        # Use a different session_id here to keep the demo deterministic.
+        await client.call_tool(
+            "container_create",
+            {"session_id": "my-session-delete", "timeout": 60},
+        )
+        result = await client.call_tool(
+            "container_delete", {"session_id": "my-session-delete"}
+        )
+        print(f"Delete: {result}")
+
+asyncio.run(main())
+```
+
+**TypeScript:**
+
+```typescript
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+
+async function main() {
+  const client = new Client(
+    { name: "edgebox-container-mgmt", version: "1.0.0" },
+    { capabilities: {} },
+  );
+  const transport = new StreamableHTTPClientTransport(
+    new URL("http://localhost:8888/mcp"),
+  );
+  await client.connect(transport);
+
+  try {
+    // Create a new container (with 60-minute timeout)
+    const created = await client.callTool({
+      name: "container_create",
+      arguments: { session_id: "my-session", timeout: 60 },
+    });
+    console.log("Create:", created.content);
+
+    // List all active containers
+    const list = await client.callTool({
+      name: "container_list",
+      arguments: {},
+    });
+    console.log("List:", list.content);
+
+    // Restart the container
+    const restarted = await client.callTool({
+      name: "container_restart",
+      arguments: { session_id: "my-session" },
+    });
+    console.log("Restart:", restarted.content);
+
+    // Cleanup option A: stop container for this session
+    const stopped = await client.callTool({
+      name: "container_stop",
+      arguments: { session_id: "my-session" },
+    });
+    console.log("Stop:", stopped.content);
+
+    // Cleanup option B (alternative): delete directly instead of stop
+    // Use a different session_id here to keep the demo deterministic.
+    await client.callTool({
+      name: "container_create",
+      arguments: { session_id: "my-session-delete", timeout: 60 },
+    });
+    const deleted = await client.callTool({
+      name: "container_delete",
+      arguments: { session_id: "my-session-delete" },
+    });
+    console.log("Delete:", deleted.content);
+  } finally {
+    await client.close();
+  }
+}
+
+main().catch(console.error);
+```
+
+#### Session Isolation Examples
+
+In EdgeBox, **each session maps to its own isolated Docker container** with a separate filesystem and runtime. When no `x-session-id` header is provided, all requests share a single `"default_session"` container. By passing different `x-session-id` headers, you can run fully isolated workloads.
+
+**Python:**
+
+```python
+import asyncio
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
+
+async def run_in_session(session_id: str):
+    """Each session gets its own isolated container."""
+    transport = StreamableHttpTransport(
+        url="http://localhost:8888/mcp",
+        headers={"x-session-id": session_id},
+    )
+    client = Client(transport)
+
+    async with client:
+        # Write a file - only visible within this session's container
+        await client.call_tool(
+            "fs_write",
+            {"path": "/tmp/id.txt", "content": f"I am {session_id}"},
+        )
+
+        # Read it back
+        result = await client.call_tool("fs_read", {"path": "/tmp/id.txt"})
+        print(f"[{session_id}] /tmp/id.txt => {result}")
+
+        # Run a command in this session's container
+        result = await client.call_tool(
+            "shell_run", {"command": "hostname"}
+        )
+        print(f"[{session_id}] hostname => {result}")
+
+async def main():
+    # Run sequentially for deterministic output in Python clients.
+    await run_in_session("session-alice")
+    await run_in_session("session-bob")
+    # session-alice's /tmp/id.txt contains "I am session-alice"
+    # session-bob's  /tmp/id.txt contains "I am session-bob"
+    # They never interfere with each other.
+
+asyncio.run(main())
+```
+
+**TypeScript:**
+
+```typescript
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+
+async function runInSession(sessionId: string) {
+  const client = new Client(
+    { name: "edgebox-session-demo", version: "1.0.0" },
+    { capabilities: {} },
+  );
+  const transport = new StreamableHTTPClientTransport(
+    new URL("http://localhost:8888/mcp"),
+    {
+      requestInit: {
+        headers: { "x-session-id": sessionId },
+      },
+    },
+  );
+  await client.connect(transport);
+
+  try {
+    // Write a file - only visible within this session's container
+    await client.callTool({
+      name: "fs_write",
+      arguments: { path: "/tmp/id.txt", content: `I am ${sessionId}` },
+    });
+
+    // Read it back
+    const read = await client.callTool({
+      name: "fs_read",
+      arguments: { path: "/tmp/id.txt" },
+    });
+    console.log(`[${sessionId}] /tmp/id.txt =>`, read.content);
+
+    // Run a command in this session's container
+    const host = await client.callTool({
+      name: "shell_run",
+      arguments: { command: "hostname" },
+    });
+    console.log(`[${sessionId}] hostname =>`, host.content);
+  } finally {
+    await client.close();
+  }
+}
+
+async function main() {
+  // These two sessions run in completely separate containers
+  await Promise.all([
+    runInSession("session-alice"),
+    runInSession("session-bob"),
+  ]);
+  // session-alice's /tmp/id.txt contains "I am session-alice"
+  // session-bob's  /tmp/id.txt contains "I am session-bob"
+  // They never interfere with each other.
+}
+
+main().catch(console.error);
+```
+
+#### Concurrency Validation (<= 4)
+
+If you want to validate session isolation under light concurrency, keep concurrency low (e.g. `<= 4`) and verify each session reads back the value it wrote.
+
+**Python (4 sessions, unique paths):**
+
+```python
+import asyncio
+from fastmcp import Client
+from fastmcp.client.transports import StreamableHttpTransport
+
+URL = "http://localhost:8888/mcp"
+SESSIONS = ["s1", "s2", "s3", "s4"]
+ROUNDS = 20
+
+async def run_once(session_id: str, round_no: int) -> bool:
+    transport = StreamableHttpTransport(
+        url=URL,
+        headers={"x-session-id": session_id},
+    )
+    client = Client(transport)
+
+    path = f"/tmp/id-{session_id}.txt"
+    expected = f"{session_id}-r{round_no}"
+
+    async with client:
+        await client.call_tool("fs_write", {"path": path, "content": expected})
+        read = await client.call_tool("fs_read", {"path": path})
+        actual = read.content[0].text
+        return actual == expected
+
+async def main():
+    bad = 0
+    for i in range(1, ROUNDS + 1):
+        results = await asyncio.gather(*[run_once(s, i) for s in SESSIONS])
+        bad += sum(0 if ok else 1 for ok in results)
+    print(f"BAD={bad}")
+
+asyncio.run(main())
+```
+
+**TypeScript (4 sessions, unique paths):**
+
+```typescript
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+
+const URL = "http://localhost:8888/mcp";
+const SESSIONS = ["s1", "s2", "s3", "s4"];
+const ROUNDS = 20;
+
+async function runOnce(sessionId: string, roundNo: number): Promise<boolean> {
+  const client = new Client(
+    { name: "edgebox-isolation-check", version: "1.0.0" },
+    { capabilities: {} },
+  );
+  const transport = new StreamableHTTPClientTransport(new URL(URL), {
+    requestInit: { headers: { "x-session-id": sessionId } },
+  });
+  await client.connect(transport);
+
+  const path = `/tmp/id-${sessionId}.txt`;
+  const expected = `${sessionId}-r${roundNo}`;
+
+  try {
+    await client.callTool({
+      name: "fs_write",
+      arguments: { path, content: expected },
+    });
+    const read = await client.callTool({
+      name: "fs_read",
+      arguments: { path },
+    });
+    const actual = (read.content?.[0] as any)?.text ?? "";
+    return actual === expected;
+  } finally {
+    await client.close();
+  }
+}
+
+async function main() {
+  let bad = 0;
+  for (let i = 1; i <= ROUNDS; i++) {
+    const results = await Promise.all(SESSIONS.map((s) => runOnce(s, i)));
+    bad += results.filter((ok) => !ok).length;
+  }
+  console.log(`BAD=${bad}`);
+}
+
+main().catch(console.error);
 ```
 
 ## 🔐 Security
