@@ -3,6 +3,8 @@
 [![Release](https://github.com/BIGPPWONG/EdgeBox/actions/workflows/release.yml/badge.svg?branch=main)](https://github.com/BIGPPWONG/EdgeBox/actions/workflows/release.yml)
 [![简体中文](https://img.shields.io/static/v1?label=%E7%AE%80%E4%BD%93%E4%B8%AD%E6%96%87&message=README-zh&color=blue)](README-zh.md)
 
+> **💡 新项目推荐**: 如果你需要更轻量化的内核级沙箱方案，查看 [**DAIMON**](https://daimon-hq.github.io) —— 一个专为 AI Agent 设计的轻量级本地沙箱运行时。DAIMON 采用 Rust 编写，基于 Linux Landlock LSM 和 seccomp 实现 OS 内核级强制沙箱，提供细粒度的文件系统访问控制、网络隔离和非特权用户身份执行。相比传统 Docker 容器方案更加轻量，适合 MCP Server 的安全执行环境。
+
 <div align="center">
   <img src="assets/icon/icon.png" alt="EdgeBox Logo" width="128" height="128" />
   <br/>
